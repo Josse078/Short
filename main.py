@@ -6,6 +6,7 @@ import pyautogui
 import time
 import urllib.request
 import os
+import math
 # ── Gesture → shortcut map ───────────────────────────────────────────────────
 # FIST       (no fingers up)              → Undo       (⌘Z)
 # PEACE      (index + middle up)          → Copy       (⌘C)
@@ -45,11 +46,15 @@ GESTURES = {
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def fingers_up(lm):
-    tips = [4, 8, 12, 16, 20]
-    pip  = [3, 6, 10, 14, 18]
+    tips = [8, 12, 16, 20]
+    pip  = [6, 10, 14, 18]
     up = []
-    up.append(lm[tips[0]].x < lm[pip[0]].x)
-    for i in range(1, 5):
+
+    thumb_tip = lm[4]
+    pinky_base = lm[17]
+    dist = math.hypot(thumb_tip.x - pinky_base.x,thumb_tip.y-pinky_base.y) 
+    up.append(dist>0.12)
+    for i in range(4):
         up.append(lm[tips[i]].y < lm[pip[i]].y)
     return up
 
@@ -106,7 +111,7 @@ while cap.isOpened():
         h, w, _ = frame.shape
         for connection in mp.tasks.vision.HandLandmarksConnections.HAND_CONNECTIONS:
             x0 = int(lm[connection.start].x * w)
-            y0 = int(lm[connection.start].y * h)
+            y0 = int(lm[connection.start].y * h)    
             x1 = int(lm[connection.end].x * w)
             y1 = int(lm[connection.end].y * h)
             cv2.line(frame, (x0, y0), (x1, y1), (0, 255, 0), 2)
