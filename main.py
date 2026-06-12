@@ -1,21 +1,16 @@
+import os
+import math
+import time
+import urllib.request
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 import pyautogui
-import time
-import urllib.request
-import os
-import math
-# ── Gesture → shortcut map ───────────────────────────────────────────────────
-# FIST       (no fingers up)              → Undo       (⌘Z)
-# PEACE      (index + middle up)          → Copy       (⌘C)
-# OPEN_HAND  (all fingers up)             → Paste      (⌘V)
-# THUMBS_UP  (thumb only up)             → Save       (⌘S)
-# POINT_UP   (index only up)             → New Tab    (⌘T)
+
 pyautogui.FAILSAFE = False
 
-# Download the hand landmark model if not present
+# ── Download Model ───────────────────────────────────────────────────────────
 MODEL_PATH = "hand_landmarker.task"
 if not os.path.exists(MODEL_PATH):
     print("Downloading hand landmarker model...")
@@ -24,7 +19,7 @@ if not os.path.exists(MODEL_PATH):
         MODEL_PATH
     )
 
-# ── New Tasks API setup ──────────────────────────────────────────────────────
+# ── MediaPipe Setup ──────────────────────────────────────────────────────────
 base_options = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
 options = vision.HandLandmarkerOptions(
     base_options=base_options,
@@ -35,7 +30,7 @@ options = vision.HandLandmarkerOptions(
 )
 detector = vision.HandLandmarker.create_from_options(options)
 
-# ── Gesture → shortcut map ───────────────────────────────────────────────────
+# ── Gesture Maps ────────────────────────────────────────────────────────────
 GESTURES = {
     "FIST":       ("Undo",     lambda: pyautogui.hotkey("command", "z")),
     "PEACE":      ("Copy",     lambda: pyautogui.hotkey("command", "c")),
@@ -44,7 +39,6 @@ GESTURES = {
     "POINT_UP":   ("New Tab",  lambda: pyautogui.hotkey("command", "t")),
 }
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 def fingers_up(lm):
     tips = [8, 12, 16, 20]
     pip  = [6, 10, 14, 18]
@@ -52,8 +46,8 @@ def fingers_up(lm):
 
     thumb_tip = lm[4]
     pinky_base = lm[17]
-    dist = math.hypot(thumb_tip.x - pinky_base.x,thumb_tip.y-pinky_base.y) 
-    up.append(dist>0.12)
+    dist = math.hypot(thumb_tip.x - pinky_base.x, thumb_tip.y - pinky_base.y) 
+    up.append(dist > 0.12)
     for i in range(4):
         up.append(lm[tips[i]].y < lm[pip[i]].y)
     return up
@@ -61,53 +55,60 @@ def fingers_up(lm):
 def classify(lm):
     up = fingers_up(lm)
     thumb, index, middle, ring, pinky = up
-    if not any(up):                                                              return "FIST"
-    if all(up):                                                                  return "OPEN_HAND"
-    if index and middle and not ring and not pinky and not thumb:                return "PEACE"
-    if thumb and not index and not middle and not ring and not pinky:            return "THUMBS_UP"
-    if index and not middle and not ring and not pinky and not thumb:            return "POINT_UP"
+    if not any(up):                                                    return "FIST"
+    if all(up):                                                        return "OPEN_HAND"
+    if index and middle and not ring and not pinky and not thumb:      return "PEACE"
+    if thumb and not index and not middle and not ring and not pinky:  return "THUMBS_UP"
+    if index and not middle and not ring and not pinky and not thumb:  return "POINT_UP"
     return None
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 cap = cv2.VideoCapture(0)
-
-# Give the camera time to warm up
-time.sleep(1.0)
+time.sleep(1.0) # Warmup
 
 if not cap.isOpened():
     print("ERROR: Could not open camera")
     exit(1)
 
-# Flush a few startup frames
+# PERFORMANCE TWEAK: Restrict resolution to 480p to keep math lightweight
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+# Flush startup frames
 for _ in range(5):
     cap.read()
+
 last_gesture = None
 last_time    = 0
 COOLDOWN     = 1.2
 enabled      = True
 
+# PERFORMANCE TWEAK: Cap FPS so the CPU gets time to rest between loops
+TARGET_FPS = 10
+FRAME_DELAY = 1.0 / TARGET_FPS
+
 print("Running — press 'e' to toggle on/off, 'q' to quit")
 
 while cap.isOpened():
+    start_time = time.time()
+    
     ok, frame = cap.read()
     if not ok:
-        print("WARNING: Failed to grab frame, retrying...")
         time.sleep(0.1)
         continue   
 
     frame = cv2.flip(frame, 1)
     rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    # New API: wrap in mediapipe Image and detect
     mp_image     = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     result       = detector.detect(mp_image)
     gesture_now  = None
 
     if result.hand_landmarks:
-        lm = result.hand_landmarks[0]   # first hand
+        lm = result.hand_landmarks[0]
         gesture_now = classify(lm)
 
-        # Draw landmarks manually (drawing_utils no longer exists)
+        # Draw skeletal lines
         h, w, _ = frame.shape
         for connection in mp.tasks.vision.HandLandmarksConnections.HAND_CONNECTIONS:
             x0 = int(lm[connection.start].x * w)
@@ -115,6 +116,7 @@ while cap.isOpened():
             x1 = int(lm[connection.end].x * w)
             y1 = int(lm[connection.end].y * h)
             cv2.line(frame, (x0, y0), (x1, y1), (0, 255, 0), 2)
+        # Draw joint nodes
         for point in lm:
             cx, cy = int(point.x * w), int(point.y * h)
             cv2.circle(frame, (cx, cy), 4, (255, 0, 255), -1)
@@ -129,6 +131,7 @@ while cap.isOpened():
 
     last_gesture = gesture_now
 
+    # On-Screen HUD Render Info
     status_color = (0, 200, 0) if enabled else (0, 0, 200)
     cv2.putText(frame, f"Gestures: {'ON' if enabled else 'OFF'}", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
@@ -145,11 +148,19 @@ while cap.isOpened():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
     cv2.imshow("Hand Shortcuts", frame)
+    
+    # Process inputs (1ms brief window)
     key = cv2.waitKey(1) & 0xFF
     if key == ord("q"): break
     if key == ord("e"):
         enabled = not enabled
         print(f"Gestures {'enabled' if enabled else 'disabled'}")
+
+    # PERFORMANCE TWEAK: Sleep loop padding to guarantee low CPU usage
+    elapsed = time.time() - start_time
+    sleep_time = FRAME_DELAY - elapsed
+    if sleep_time > 0:
+        time.sleep(sleep_time)
 
 cap.release()
 cv2.destroyAllWindows()
